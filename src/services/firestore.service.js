@@ -5,9 +5,14 @@ const createPendingRegistration = async (data) => {
 
   const registration = {
     id: ref.id,
+
     ...data,
+
     status: "pending_payment",
     paymentStatus: "unpaid",
+
+    documentStatus: "not_generated",
+
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -27,11 +32,20 @@ const updateRegistration = async (id, data) => {
 
   const updated = await ref.get();
 
+  if (!updated.exists) {
+    throw new Error(
+      `Registration not found: ${id}`
+    );
+  }
+
   return updated.data();
 };
 
 const getRegistration = async (id) => {
-  const doc = await db.collection("registrations").doc(id).get();
+  const doc = await db
+    .collection("registrations")
+    .doc(id)
+    .get();
 
   if (!doc.exists) {
     return null;
@@ -47,7 +61,9 @@ const getRegistrations = async (type = null) => {
     query = query.where("type", "==", type);
   }
 
-  const snapshot = await query.orderBy("createdAt", "desc").get();
+  const snapshot = await query
+    .orderBy("createdAt", "desc")
+    .get();
 
   return snapshot.docs.map((doc) => doc.data());
 };

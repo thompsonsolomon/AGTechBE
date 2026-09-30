@@ -4,6 +4,7 @@ const {
   startRegistrationPayment,
   handlePaystackCallback,
   handlePaystackWebhook,
+  getRegistrationDocuments,
 } = require("../controllers/payment.controller");
 
 const router = express.Router();
@@ -21,6 +22,11 @@ router.get(
 router.post(
   "/webhook",
   handlePaystackWebhook
+);
+
+router.get(
+  "/registration/:registrationId/documents",
+  getRegistrationDocuments
 );
 
 module.exports = router;
