@@ -54,21 +54,6 @@ const getRegistration = async (id) => {
   return doc.data();
 };
 
-// const getRegistrations = async (type = null) => {
-//   let query = db.collection("registrations");
-
-//   if (type) {
-//     query = query.where("type", "==", type);
-//   }
-
-//   const snapshot = await query
-//     .orderBy("createdAt", "desc")
-//     .get();
-
-//   return snapshot.docs.map((doc) => doc.data());
-// };
-
-
 const getRegistrations = async (type = null) => {
   let query = db.collection("registrations");
 
@@ -76,7 +61,9 @@ const getRegistrations = async (type = null) => {
     query = query.where("type", "==", type);
   }
 
-  const snapshot = await query.get();
+  const snapshot = await query
+    .orderBy("createdAt", "desc")
+    .get();
 
   return snapshot.docs.map((doc) => doc.data());
 };
