@@ -1,0 +1,45 @@
+1. **Landing / Home** 
+2. **Login** 
+3. **Register** 
+4. **Forgot Password** 
+
+### 👤 Customer
+
+5. **Customer Dashboard** 
+6. **Send Package** 
+7. **Dispatch Order Review** 
+8. **Payment** 
+9. **Order Success** 
+10. **My Orders** 
+11. **Order Details / Tracking** 
+12. **Go To Market** 
+13. **Market Order Review** 
+14. **Profile / Account** 
+15. **Notifications** 
+
+### 🛵 Rider
+
+16. **Rider Login** 
+17. **Rider Dashboard** 
+18. **Available Orders** 
+19. **Order Details** 
+20. **Active Delivery** 
+21. **Delivery Proof** 
+22. **Rider History** 
+23. **Rider Profile** 
+
+### 🖥️ Admin
+
+24. **Admin Login** 
+25. **Admin Dashboard** 
+26. **Orders** 
+27. **Order Details** 
+28. **Riders** 
+29. **Rider Details** 
+30. **Customers** 
+31. **Customer Details** 
+32. **Pricing Management** 
+33. **Waybills** 
+34. **Reports** 
+35. **Notifications** 
+36. **Admin Settings** 
