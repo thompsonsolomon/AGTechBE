@@ -2,7 +2,11 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import admin from "firebase-admin";
+import { initializeApp, cert, getApps } from "firebase-admin/app";
+import {
+  getFirestore,
+  FieldValue,
+} from "firebase-admin/firestore";
 
 dotenv.config();
 
@@ -13,21 +17,37 @@ const SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
 
-// Firebase Admin
 // Firebase Admin configuration
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-    }),
-  });
+const requiredFirebaseVars = [
+  "FIREBASE_PROJECT_ID",
+  "FIREBASE_CLIENT_EMAIL",
+  "FIREBASE_PRIVATE_KEY",
+];
+
+const missingFirebaseVars = requiredFirebaseVars.filter(
+  (key) => !process.env[key]
+);
+
+if (missingFirebaseVars.length) {
+  throw new Error(
+    `Missing Firebase environment variables: ${missingFirebaseVars.join(", ")}`
+  );
 }
 
+const firebaseApp =
+  getApps().length > 0
+    ? getApps()[0]
+    : initializeApp({
+        credential: cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+        }),
+      });
 
-const db = admin.firestore();
+const db = getFirestore(firebaseApp);
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -40,6 +60,22 @@ const FEES = {
   investor: 50000000,
 };
 
+function getSuccessUrl(status, registrationId, reference = "") {
+  const url = new URL("/membership-success", FRONTEND_URL);
+
+  url.searchParams.set("payment", status);
+
+  if (registrationId) {
+    url.searchParams.set("registrationId", registrationId);
+  }
+
+  if (reference) {
+    url.searchParams.set("reference", reference);
+  }
+
+  return url.toString();
+}
+
 app.get("/", (req, res) => {
   res.send("Agro Trade Hub payment server is running.");
 });
@@ -47,55 +83,65 @@ app.get("/", (req, res) => {
 // Initialize Paystack payment
 app.get("/api/payment/:registrationId", async (req, res) => {
   try {
-    const { registrationId } = req.params;
-
     if (!SECRET_KEY || !FRONTEND_URL || !BACKEND_URL) {
       return res.status(500).send("Payment configuration is incomplete.");
     }
+
+    const { registrationId } = req.params;
 
     if (!registrationId) {
       return res.status(400).send("Registration ID is required.");
     }
 
-    // Get the registration from Firestore
     const registrationRef = db
       .collection("registrations")
       .doc(registrationId);
 
-    const registrationSnapshot = await registrationRef.get();
+    const snapshot = await registrationRef.get();
 
-    if (!registrationSnapshot.exists) {
+    if (!snapshot.exists) {
       return res.status(404).send("Registration not found.");
     }
 
-    const registration = registrationSnapshot.data();
+    const registration = snapshot.data();
     const category = registration.categoryId;
     const amount = FEES[category];
 
     if (
       !amount ||
       Number(registration.amount) !== amount ||
-      String(registration.currency).toUpperCase() !== "NGN"
+      String(registration.currency || "").toUpperCase() !== "NGN"
     ) {
       return res.status(400).send("Invalid registration fee.");
     }
 
-    if (
-      !registration.email ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registration.email)
-    ) {
+    const email = String(registration.email || "").trim();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).send("Invalid registration email.");
     }
 
-    if (
-      ["paid", "success", "successful"].includes(
-        String(registration.paymentStatus || "").toLowerCase()
-      )
-    ) {
-      return res.status(400).send("This registration has already been paid.");
+    const status = String(
+      registration.paymentStatus || ""
+    ).toLowerCase();
+
+    if (["paid", "success", "successful"].includes(status)) {
+      if (!registration.paymentReference) {
+        return res.status(409).send(
+          "This registration is marked as paid but has no payment reference. Please contact support."
+        );
+      }
+
+      return res.redirect(
+        303,
+        getSuccessUrl(
+          "success",
+          registrationId,
+          registration.paymentReference
+        )
+      );
     }
 
-    // Pass the registration ID to the callback
     const callbackUrl = new URL("/api/callback", BACKEND_URL);
     callbackUrl.searchParams.set("registrationId", registrationId);
 
@@ -108,7 +154,7 @@ app.get("/api/payment/:registrationId", async (req, res) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          email: registration.email,
+          email,
           amount,
           currency: "NGN",
           callback_url: callbackUrl.toString(),
@@ -117,6 +163,7 @@ app.get("/api/payment/:registrationId", async (req, res) => {
             category,
           },
         }),
+        signal: AbortSignal.timeout(15000),
       }
     );
 
@@ -124,48 +171,32 @@ app.get("/api/payment/:registrationId", async (req, res) => {
 
     if (
       !response.ok ||
-      !result.status ||
-      !result.data?.authorization_url
+      result.status !== true ||
+      !result.data?.authorization_url ||
+      !result.data?.reference
     ) {
       console.error("Paystack initialization error:", result);
       return res.status(502).send("Could not initialize payment.");
     }
 
-    // Save the Paystack reference
     await registrationRef.update({
       paymentStatus: "pending",
       paymentReference: result.data.reference,
     });
 
-    return res.redirect(result.data.authorization_url);
+    return res.redirect(303, result.data.authorization_url);
   } catch (error) {
     console.error("Payment initialization error:", error);
     return res.status(500).send("Could not start payment.");
   }
 });
 
-// Verify payment, update Firestore, and redirect
+// Verify Paystack payment and update Firestore
 app.get("/api/callback", async (req, res) => {
   const registrationId = String(req.query.registrationId || "");
   const reference = String(
     req.query.reference || req.query.trxref || ""
   );
-
-  const redirectToSuccess = (status) => {
-    const url = new URL("/membership-success", FRONTEND_URL);
-
-    url.searchParams.set("payment", status);
-
-    if (registrationId) {
-      url.searchParams.set("registrationId", registrationId);
-    }
-
-    if (reference) {
-      url.searchParams.set("reference", reference);
-    }
-
-    return res.redirect(303, url.toString());
-  };
 
   try {
     if (!SECRET_KEY || !FRONTEND_URL) {
@@ -173,31 +204,40 @@ app.get("/api/callback", async (req, res) => {
     }
 
     if (!registrationId || !reference) {
-      return redirectToSuccess("failed");
+      return res.redirect(
+        303,
+        getSuccessUrl("failed", registrationId, reference)
+      );
     }
 
-    // Get the registration
     const registrationRef = db
       .collection("registrations")
       .doc(registrationId);
 
-    const registrationSnapshot = await registrationRef.get();
+    const snapshot = await registrationRef.get();
 
-    if (!registrationSnapshot.exists) {
-      return redirectToSuccess("failed");
+    if (!snapshot.exists) {
+      return res.redirect(
+        303,
+        getSuccessUrl("failed", registrationId, reference)
+      );
     }
 
-    const registration = registrationSnapshot.data();
+    const registration = snapshot.data();
     const expectedAmount = FEES[registration.categoryId];
 
     if (
       !expectedAmount ||
-      Number(registration.amount) !== expectedAmount
+      Number(registration.amount) !== expectedAmount ||
+      String(registration.currency || "").toUpperCase() !== "NGN"
     ) {
-      return redirectToSuccess("failed");
+      return res.redirect(
+        303,
+        getSuccessUrl("failed", registrationId, reference)
+      );
     }
 
-    // Ask Paystack to verify the actual transaction
+    // Verify directly with Paystack
     const response = await fetch(
       `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
       {
@@ -206,6 +246,7 @@ app.get("/api/callback", async (req, res) => {
           Authorization: `Bearer ${SECRET_KEY}`,
           "Content-Type": "application/json",
         },
+        signal: AbortSignal.timeout(15000),
       }
     );
 
@@ -219,22 +260,25 @@ app.get("/api/callback", async (req, res) => {
       payment?.reference === reference &&
       payment?.currency === "NGN" &&
       payment?.amount === expectedAmount &&
-      payment?.customer?.email?.toLowerCase() ===
-        registration.email?.toLowerCase() &&
+      String(payment?.customer?.email || "").toLowerCase() ===
+        String(registration.email || "").toLowerCase() &&
       payment?.metadata?.registrationId === registrationId &&
       payment?.metadata?.category === registration.categoryId;
 
     if (!valid) {
-      console.error("Payment verification failed:", result);
-      return redirectToSuccess("failed");
+      console.error("Paystack verification failed:", result);
+
+      return res.redirect(
+        303,
+        getSuccessUrl("failed", registrationId, reference)
+      );
     }
 
-    // IMPORTANT: Update Firestore only after verification succeeds
+    // Save payment status only after successful verification
     await registrationRef.update({
       paymentStatus: "paid",
       paymentReference: reference,
-      paymentVerifiedAt:
-        admin.firestore.FieldValue.serverTimestamp(),
+      paymentVerifiedAt: FieldValue.serverTimestamp(),
     });
 
     console.log(
@@ -242,14 +286,20 @@ app.get("/api/callback", async (req, res) => {
       registrationId
     );
 
-    return redirectToSuccess("success");
+    return res.redirect(
+      303,
+      getSuccessUrl("success", registrationId, reference)
+    );
   } catch (error) {
     console.error("Payment callback error:", error);
-    return redirectToSuccess("failed");
+
+    return res.redirect(
+      303,
+      getSuccessUrl("failed", registrationId, reference)
+    );
   }
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`Payment server running on port ${PORT}`);
 });
